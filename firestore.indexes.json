@@ -1,0 +1,4 @@
+{"indexes":[
+{"collectionGroup":"messages","queryScope":"COLLECTION","fields":[{"fieldPath":"room","order":"ASCENDING"},{"fieldPath":"ts","order":"DESCENDING"}]},
+{"collectionGroup":"dms","queryScope":"COLLECTION","fields":[{"fieldPath":"members","arrayConfig":"CONTAINS"},{"fieldPath":"lastTs","order":"DESCENDING"}]}
+],"fieldOverrides":[]}
