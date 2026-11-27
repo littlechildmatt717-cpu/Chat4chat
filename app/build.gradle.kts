@@ -6,11 +6,11 @@ plugins {
 
 android {
     namespace = "com.chat4chat.app"
-    compileSdk = 35
+    compileSdk = 36
     defaultConfig {
         applicationId = "com.chat4chat.app"
         minSdk = 24
-        targetSdk = 35
+        targetSdk = 36
         versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 1
         versionName = "1.0"
     }
