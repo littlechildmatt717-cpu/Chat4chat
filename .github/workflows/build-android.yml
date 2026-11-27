@@ -1,0 +1,376 @@
+name: Build love that Android
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+# ✅ CHANGE THESE TWO NUMBERS FOR EACH NEW GOOGLE PLAY RELEASE
+env:
+  VERSION_CODE: "9"
+  VERSION_NAME: "7.2"
+
+jobs:
+  android-release:
+    name: Android release build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Verify Node and npm
+        run: |
+          node --version
+          npm --version
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          echo "Installing dependencies..."
+          npm install --no-audit --no-fund
+          echo "Dependencies installed successfully."
+
+      - name: Build web application
+        run: npm run build
+
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      - name: Show Android SDK information
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
+          sdkmanager --version
+          adb version || true
+
+      - name: Add Android platform
+        run: |
+          set -euo pipefail
+          if [ ! -d android ]; then
+            echo "Creating Android project with Capacitor..."
+            npx cap add android
+          else
+            echo "Android directory already exists."
+          fi
+
+      - name: Generate Android app icons
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f assets/icon-only.png ]; then
+            npm install --no-save --no-audit --no-fund @capacitor/assets
+            npx capacitor-assets generate --android --iconBackgroundColor '#000000' --iconBackgroundColorDark '#000000'
+          else
+            echo "::warning::assets/icon-only.png not found - the default Capacitor icon will be used."
+          fi
+
+      - name: Sync Capacitor Android
+        run: |
+          set -euo pipefail
+          npx cap sync android
+
+      - name: Detect Android SDK requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+          COMPILE_SDK=""
+          if [ -f android/variables.gradle ]; then
+            COMPILE_SDK="$(grep -E 'compileSdkVersion[[:space:]]*=' android/variables.gradle | tail -n 1 | sed -E 's/.*compileSdkVersion[[:space:]]*=[[:space:]]*//; s/[^0-9].*//')"
+          fi
+          if [ -z "$COMPILE_SDK" ] && [ -f android/app/build.gradle ]; then
+            COMPILE_SDK="$(grep -E 'compileSdk(Label|Version)?[[:space:]]+' android/app/build.gradle | head -n 1 | grep -oE '[0-9]+' | head -n 1 || true)"
+          fi
+          if [ -z "$COMPILE_SDK" ]; then
+            COMPILE_SDK="35"
+            echo "Could not detect compileSdk. Using Android API 35."
+          else
+            echo "Detected compileSdk: $COMPILE_SDK"
+          fi
+          echo "COMPILE_SDK=$COMPILE_SDK" >> "$GITHUB_ENV"
+
+      - name: Install required Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Installing Android platform and build tools for API $COMPILE_SDK..."
+          sdkmanager "platform-tools" "platforms;android-${COMPILE_SDK}"
+          echo "Installed Android SDK packages:"
+          sdkmanager --list_installed | head -n 100
+
+      - name: Repair Android manifest safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ ! -f "$MANIFEST" ]; then
+            echo "::error::AndroidManifest.xml was not generated."
+            exit 1
+          fi
+          echo "=== MANIFEST BEFORE REPAIR ==="
+          nl -ba "$MANIFEST"
+          python3 - "$MANIFEST" <<'PY'
+          import re, sys
+          from pathlib import Path
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+          permissions = [
+            "android.permission.CAMERA",
+            "android.permission.RECORD_AUDIO",
+            "android.permission.MODIFY_AUDIO_SETTINGS",
+            "android.permission.POST_NOTIFICATIONS",
+            "com.google.android.gms.permission.AD_ID",
+          ]
+          # Google Play photo/video permissions policy: these must NOT be in the app
+          banned = [
+            "android.permission.READ_MEDIA_IMAGES",
+            "android.permission.READ_MEDIA_VIDEO",
+          ]
+          ADMOB_APP_ID = "ca-app-pub-7675714255330333~8500714539"
+          features = ["android.hardware.camera", "android.hardware.microphone"]
+          for p in permissions + banned:
+            text = re.sub(r'^[ \t]*<uses-permission\b[^>]*android:name\s*=\s*["\']'+re.escape(p)+r'["\'][^>]*/?>[ \t]*\r?\n?', "", text, flags=re.MULTILINE)
+          for f in features:
+            text = re.sub(r'^[ \t]*<uses-feature\b[^>]*android:name\s*=\s*["\']'+re.escape(f)+r'["\'][^>]*/?>[ \t]*\r?\n?', "", text, flags=re.MULTILINE)
+          match = re.search(r'<manifest\b[^>]*>', text, flags=re.IGNORECASE)
+          if not match:
+            print("::error::Could not find <manifest> element.")
+            sys.exit(1)
+          manifest_tag = match.group(0)
+          ns_pattern = r'\s+xmlns:android\s*=\s*(["\'])http://schemas\.android\.com/apk/res/android\1'
+          ns_matches = list(re.finditer(ns_pattern, manifest_tag))
+          if len(ns_matches) > 1:
+            print("::error::Multiple xmlns:android declarations.")
+            sys.exit(1)
+          if len(ns_matches) == 0:
+            repaired_tag = manifest_tag[:-1].rstrip() + ' xmlns:android="http://schemas.android.com/apk/res/android">'
+            text = text[:match.start()] + repaired_tag + text[match.end():]
+            match = re.search(r'<manifest\b[^>]*>', text, flags=re.IGNORECASE)
+          block = "\n"
+          for p in permissions:
+            block += '    <uses-permission android:name="' + p + '" />\n'
+          for f in features:
+            block += '    <uses-feature android:name="' + f + '" android:required="false" />\n'
+          text = text[:match.end()] + block + text[match.end():]
+          # AdMob application ID (the app crashes on start without it)
+          text = re.sub(r'^[ \t]*<meta-data\b[^>]*com\.google\.android\.gms\.ads\.APPLICATION_ID[^>]*/>[ \t]*\r?\n?', "", text, flags=re.MULTILINE)
+          if "</application>" not in text:
+            print("::error::Could not find </application>.")
+            sys.exit(1)
+          meta = '    <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="' + ADMOB_APP_ID + '" />\n    '
+          text = text.replace("</application>", meta + "</application>", 1)
+          path.write_text(text, encoding="utf-8")
+          print("Manifest repair completed.")
+          PY
+          echo "=== MANIFEST AFTER REPAIR ==="
+          nl -ba "$MANIFEST"
+
+      - name: Validate manifest with Python XML parser
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          python3 - "$MANIFEST" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          from pathlib import Path
+          path = Path(sys.argv[1])
+          try:
+            tree = ET.parse(path)
+            root = tree.getroot()
+          except ET.ParseError as e:
+            print(f"::error::Invalid XML: {e}")
+            for n, line in enumerate(path.read_text().splitlines(), 1):
+              print(f"{n:04d}: {line}")
+            sys.exit(1)
+          if root.tag != "manifest":
+            print(f"::error::Wrong root: {root.tag}")
+            sys.exit(1)
+          print("Python XML validation PASSED.")
+          PY
+
+      - name: Validate manifest with Java XML parser
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="$PWD/android/app/src/main/AndroidManifest.xml"
+          VALIDATOR="$RUNNER_TEMP/ManifestXmlValidator.java"
+          cat > "$VALIDATOR" <<'JAVA'
+          import java.io.File;
+          import javax.xml.parsers.DocumentBuilderFactory;
+          public class ManifestXmlValidator {
+            public static void main(String[] args) throws Exception {
+              File f = new File(args[0]);
+              DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(f);
+              System.out.println("Java XML validation PASSED.");
+            }
+          }
+          JAVA
+          javac "$VALIDATOR"
+          java -cp "$RUNNER_TEMP" ManifestXmlValidator "$MANIFEST"
+
+      - name: Strict manifest check
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          python3 - "$MANIFEST" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          tree = ET.parse(sys.argv[1])
+          root = tree.getroot()
+          android_ns = "http://schemas.android.com/apk/res/android"
+          android_name = f"{{{android_ns}}}name"
+          required = {
+            "android.permission.CAMERA",
+            "android.permission.RECORD_AUDIO",
+            "android.permission.MODIFY_AUDIO_SETTINGS",
+            "android.permission.POST_NOTIFICATIONS",
+            "com.google.android.gms.permission.AD_ID",
+          }
+          banned = {
+            "android.permission.READ_MEDIA_IMAGES",
+            "android.permission.READ_MEDIA_VIDEO",
+          }
+          found = [child.attrib.get(android_name) for child in root if child.tag == "uses-permission"]
+          for p in required:
+            if found.count(p) != 1:
+              raise SystemExit(f"{p} count: {found.count(p)} — expected 1")
+          for p in banned:
+            if p in found:
+              raise SystemExit(f"{p} must not be in the manifest (Google Play policy)")
+          app = root.find("application")
+          metas = [m.attrib.get(android_name) for m in app.findall("meta-data")] if app is not None else []
+          if "com.google.android.gms.ads.APPLICATION_ID" not in metas:
+            raise SystemExit("AdMob APPLICATION_ID meta-data is missing - the app would crash on start")
+          if root.find("application") is not None:
+            if root.find("application").find("uses-permission") is not None:
+              raise SystemExit("uses-permission inside <application> — wrong location!")
+          print("STRICT CHECK PASSED ✅ (AdMob ID present, no READ_MEDIA permissions)")
+          PY
+
+      - name: Check & set Gradle wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f android/gradlew ]; then
+            echo "::error::android/gradlew not found"
+            exit 1
+          fi
+          chmod +x android/gradlew
+
+      # ✅ SET THE VERSION (uses VERSION_CODE / VERSION_NAME at the top)
+      - name: Set app version
+        shell: bash
+        run: |
+          set -euo pipefail
+          GRADLE="android/app/build.gradle"
+          sed -i -E "s/versionCode [0-9]+/versionCode ${VERSION_CODE}/; s/versionName \"[^\"]*\"/versionName \"${VERSION_NAME}\"/" "$GRADLE"
+          echo "=== Version lines in build.gradle ==="
+          grep -nE "versionCode|versionName" "$GRADLE"
+          if ! grep -q "versionCode ${VERSION_CODE}" "$GRADLE"; then
+            echo "::error::Could not set versionCode in $GRADLE"
+            exit 1
+          fi
+
+      - name: Build Android release bundle
+        working-directory: android
+        run: ./gradlew --no-daemon --stacktrace bundleRelease
+
+      # ✅ Make sure no library added the banned permissions back
+      - name: Check merged manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILES="$(find android/app/build/intermediates -path '*merged_manifests/release*' -name AndroidManifest.xml 2>/dev/null || true)"
+          if [ -z "$FILES" ]; then
+            echo "::warning::Merged release manifest not found - skipping check."
+            exit 0
+          fi
+          for f in $FILES; do
+            echo "Checking $f"
+            if grep -qE "READ_MEDIA_(IMAGES|VIDEO)" "$f"; then
+              echo "::error::READ_MEDIA_IMAGES/VIDEO found in the merged manifest (a library added them)."
+              grep -nE "READ_MEDIA_(IMAGES|VIDEO)" "$f"
+              exit 1
+            fi
+            grep -q "com.google.android.gms.ads.APPLICATION_ID" "$f" || { echo "::error::AdMob APPLICATION_ID missing in merged manifest."; exit 1; }
+          done
+          echo "Merged manifest OK ✅"
+
+      # ✅ SIGN THE APP BUNDLE (needs the 4 GitHub secrets)
+      - name: Sign App Bundle
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for v in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!v}" ]; then
+              echo "::error::GitHub secret $v is missing. Add it under Settings > Secrets and variables > Actions."
+              exit 1
+            fi
+          done
+          AAB="android/app/build/outputs/bundle/release/app-release.aab"
+          if [ ! -f "$AAB" ]; then
+            echo "::error::$AAB not found"
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload.keystore"
+          jarsigner \
+            -sigalg SHA256withRSA \
+            -digestalg SHA-256 \
+            -keystore "$RUNNER_TEMP/upload.keystore" \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -keypass "$KEY_PASSWORD" \
+            "$AAB" "$KEY_ALIAS"
+          jarsigner -verify "$AAB"
+          rm -f "$RUNNER_TEMP/upload.keystore"
+          echo "App Bundle signed ✅"
+
+      # ✅ DOWNLOAD — signed App Bundle (for Google Play)
+      - name: Upload App Bundle (.aab)
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-bundle
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+
+      # ✅ APK — Try all possible paths + debug fallback
+      - name: Build APK
+        working-directory: android
+        run: ./gradlew --no-daemon assembleRelease assembleDebug
+
+      - name: Debug — Show built files
+        run: |
+          set -euo pipefail
+          echo "=== Found APK files ==="
+          find android/app/build/outputs -name "*.apk" -type f 2>/dev/null || echo "None found"
+
+      - name: Upload APK files
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: |
+            android/app/build/outputs/apk/release/app-release.apk
+            android/app/build/outputs/apk/release/app-release-unsigned.apk
+            android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: ignore
