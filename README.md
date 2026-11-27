@@ -42,7 +42,7 @@ Open this folder in Android Studio, let it sync (accept the Gradle/AGP upgrade p
 ## How accounts work
 - Only the **username** and **photo** are public. Full name, email and age sit in a private document only that person can read.
 - People can log in with username or email. The username is also the Firebase sign-in identity (as a hidden address).
-- **Forgot password** works through the two Cloud Functions in `functions/` (see step 6 below).
+- **Forgot password** works through the two Cloud Functions in `functions/` (see step 6 above).
 - Minimum age is `MIN_AGE = 18` in `Data.kt`, repeated as `18` in `firestore.rules`. Because strangers can message each other, 18+ is the safer choice for Play review.
 - Google Play requires an in-app way to delete the account (included: tap your avatar > Delete account) and a web page or link
   explaining how to request deletion in the Data safety form.
