@@ -6,8 +6,6 @@ on:
   workflow_dispatch:
 
 env:
-  # Folder that contains settings.gradle.kts. Use "." if the project is at the top of your repo,
-  # or "Chat4Chat" if you uploaded it inside a folder.
   PROJECT_DIR: .
 
 jobs:
@@ -23,8 +21,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.7"
-          build-root-directory: ${{ env.PROJECT_DIR }}
+          gradle-version: "8.11.1"
 
       - name: Add Firebase config
         working-directory: ${{ env.PROJECT_DIR }}
