@@ -1,7 +1,0 @@
-app/
-    google-services.json                   // Module root (default fallback)
-    src/debug/google-services.json         // Build type (for example, debug or release)
-    src/free/google-services.json          // Product flavor (for example, free or paid)
-    src/free/release/google-services.json  // Product flavor and build type
-    src/paidDebug/google-services.json     // Combined variant directory
-    ...
