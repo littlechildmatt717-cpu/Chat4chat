@@ -3,6 +3,8 @@ package com.chat4chat.app
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -342,9 +344,11 @@ fun AccountDialog(me: Profile, onClose: () -> Unit, onOut: () -> Unit) {
 @Composable
 fun rememberMsgs(room: String, ready: Boolean): List<Msg> {
     var l by remember(room) { mutableStateOf(listOf<Msg>()) }
-    DisposableEffect(room, ready) {
-        val reg = if (ready) Repo.listenMessages(room) { l = it } else null
-        onDispose { reg?.remove() }
+    var tries by remember(room) { mutableStateOf(0) }
+    DisposableEffect(room, ready, tries) {
+        val h = Handler(Looper.getMainLooper())
+        val reg = if (ready) Repo.listenMessages(room, { h.postDelayed({ tries++ }, 3000) }) { l = it } else null
+        onDispose { reg?.remove(); h.removeCallbacksAndMessages(null) }
     }
     return l
 }
@@ -498,9 +502,11 @@ fun RoomScreen(room: Room, me: Profile, ready: Boolean, online: Int, blocked: Se
 fun DmScreen(me: Profile, peer: Peer, blocked: Set<String>, onBack: () -> Unit, onLong: (Msg) -> Unit) {
     val pair = Repo.pairId(me.uid, peer.uid)
     var l by remember(pair) { mutableStateOf(listOf<Msg>()) }
-    DisposableEffect(pair) {
-        val r = Repo.listenDm(pair) { l = it }
-        onDispose { r.remove() }
+    var tries by remember(pair) { mutableStateOf(0) }
+    DisposableEffect(pair, tries) {
+        val h = Handler(Looper.getMainLooper())
+        val r = Repo.listenDm(pair, { h.postDelayed({ tries++ }, 3000) }) { l = it }
+        onDispose { r.remove(); h.removeCallbacksAndMessages(null) }
     }
     ChatUi("@" + peer.name, "Private chat", null, l.filter { it.uid !in blocked }, me.uid, onBack, {}, onLong) { k, t, u ->
         Repo.sendDm(me, peer, k, t, u)
@@ -528,7 +534,7 @@ fun ChatUi(title: String, sub: String, badge: String?, msgs: List<Msg>, myUid: S
             runCatching {
                 val vid = ctx.contentResolver.getType(uri)?.startsWith("video") == true
                 onSend(if (vid) "video" else "image", "", Repo.upload(uri, vid))
-            }.onFailure { Toast.makeText(ctx, "Upload failed (max 25 MB).", Toast.LENGTH_SHORT).show() }
+            }.onFailure { Toast.makeText(ctx, "Upload failed: ${it.message ?: it.javaClass.simpleName}", Toast.LENGTH_LONG).show() }
             busy = false
         }
     }

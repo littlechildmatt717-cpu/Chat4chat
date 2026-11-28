@@ -6,6 +6,7 @@ import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseAuthUserCollisionException
+import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
@@ -159,11 +160,12 @@ object Repo {
         user.delete().await()
     }
 
-    fun listenMessages(room: String, cb: (List<Msg>) -> Unit): ListenerRegistration =
+    fun listenMessages(room: String, onError: () -> Unit = {}, cb: (List<Msg>) -> Unit): ListenerRegistration =
         db.collection("messages").whereEqualTo("room", room)
             .orderBy("ts", Query.Direction.DESCENDING).limit(100)
-            .addSnapshotListener { s, _ ->
-                if (s != null) cb(s.documents.mapNotNull { d -> d.toObject(Msg::class.java)?.copy(id = d.id) }.reversed())
+            .addSnapshotListener { s, e ->
+                if (e != null) { onError(); return@addSnapshotListener }
+                if (s != null) cb(s.documents.mapNotNull { d -> d.toObject(Msg::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)?.copy(id = d.id) }.reversed())
             }
 
     suspend fun send(room: String, me: Profile, kind: String, text: String = "", url: String = "") {
@@ -181,11 +183,12 @@ object Repo {
                 if (s != null) cb(s.documents.mapNotNull { d -> d.toObject(Convo::class.java)?.copy(id = d.id) })
             }
 
-    fun listenDm(pair: String, cb: (List<Msg>) -> Unit): ListenerRegistration =
+    fun listenDm(pair: String, onError: () -> Unit = {}, cb: (List<Msg>) -> Unit): ListenerRegistration =
         db.collection("dms").document(pair).collection("messages")
             .orderBy("ts", Query.Direction.DESCENDING).limit(100)
-            .addSnapshotListener { s, _ ->
-                if (s != null) cb(s.documents.mapNotNull { d -> d.toObject(Msg::class.java)?.copy(id = d.id) }.reversed())
+            .addSnapshotListener { s, e ->
+                if (e != null) { onError(); return@addSnapshotListener }
+                if (s != null) cb(s.documents.mapNotNull { d -> d.toObject(Msg::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)?.copy(id = d.id) }.reversed())
             }
 
     suspend fun sendDm(me: Profile, peer: Peer, kind: String, text: String = "", url: String = "") {
